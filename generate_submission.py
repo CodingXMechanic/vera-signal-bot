@@ -7,10 +7,10 @@ from composer import compose
 BASE = Path(__file__).parent
 SEED = BASE.parent / "magicpin-ai-challenge" / "dataset"
 
-cats = {json.load(open(f))["slug"]: json.load(open(f)) for f in (SEED / "categories").glob("*.json")}
-merchs = {m["merchant_id"]: m for m in json.load(open(SEED / "merchants_seed.json"))["merchants"]}
-custs = {c["customer_id"]: c for c in json.load(open(SEED / "customers_seed.json"))["customers"]}
-trigs = json.load(open(SEED / "triggers_seed.json"))["triggers"]
+cats = {json.load(open(f, encoding="utf-8"))["slug"]: json.load(open(f, encoding="utf-8")) for f in (SEED / "categories").glob("*.json")}
+merchs = {m["merchant_id"]: m for m in json.load(open(SEED / "merchants_seed.json", encoding="utf-8"))["merchants"]}
+custs = {c["customer_id"]: c for c in json.load(open(SEED / "customers_seed.json", encoding="utf-8"))["customers"]}
+trigs = json.load(open(SEED / "triggers_seed.json", encoding="utf-8"))["triggers"]
 
 out = BASE / "submission.jsonl"
 with open(out, "w", encoding="utf-8") as f:

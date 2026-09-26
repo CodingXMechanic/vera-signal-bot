@@ -142,10 +142,76 @@ def _hi_mix(merchant=None, customer=None):
 def _scrub(text):
     for t in TABOOS + GENERIC_BANNED:
         if t.lower() in text.lower():
-            text = re.sub(re.escape(t), "[removed]", text, flags=re.IGNORECASE)
+            text = re.sub(re.escape(t), "", text, flags=re.IGNORECASE)
     # collapse whitespace, enforce WhatsApp-friendly length
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def _de_mojibake(obj):
+    """Undo cp1252-misread-of-UTF-8 if any sender decoded payloads wrongly.
+
+    Real symptom seen in testing: U+20B9 RUPEE SIGN arriving as the 3-char
+    sequence U+00E2 U+201A U+00B9. Judge payloads are clean UTF-8; this is
+    dormant insurance that can only restore the intended character.
+    """
+    if isinstance(obj, str):
+        return obj.replace("â‚¹", "₹").replace("â€œ", "\u201c").replace("â€", "\u201d").replace("â€“", "\u2013").replace("â€”", "\u2014")
+    if isinstance(obj, list):
+        return [_de_mojibake(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _de_mojibake(v) for k, v in obj.items()}
+    return obj
+
+
+def _find_offer(merchant, *keywords):
+    """Return the title of the first active offer matching any keyword (else None)."""
+    for o in merchant.get("offers", []) or []:
+        if isinstance(o, dict) and o.get("status") == "active" and o.get("title"):
+            t = str(o["title"]).lower()
+            if not keywords or any(k.lower() in t for k in keywords):
+                return o["title"]
+    return None
+
+
+def _base_price(text):
+    """Extract the first ₹NNN price from an offer title (else None)."""
+    if not text:
+        return None
+    m = re.search(r"₹\s?([\d,]+)", str(text))
+    if not m:
+        return None
+    try:
+        return int(m.group(1).replace(",", ""))
+    except Exception:
+        return None
+
+
+def _round5(x):
+    return int(round(x / 5.0) * 5)
+
+
+def _seasonal_note(category):
+    beats = category.get("seasonal_beats", []) or []
+    if beats and isinstance(beats[0], dict) and beats[0].get("note"):
+        return f"{beats[0]['month_range']}: {beats[0]['note']}" if beats[0].get("month_range") else beats[0]["note"]
+    return None
+
+
+def _digest_proof(category, *needles):
+    """Find a digest item whose title/summary contains any needle; return (item, pct_str|None).
+
+    Only returns numbers actually present in the item text — never invented.
+    """
+    for it in category.get("digest", []) or []:
+        if not isinstance(it, dict):
+            continue
+        blob = f"{it.get('title','')} {it.get('summary','')}"
+        low = blob.lower()
+        if any(n.lower() in low for n in needles):
+            m = re.search(r"([-+]?\d+%)", blob)
+            return it, (m.group(1) if m else None)
+    return None, None
 
 
 def _cta_for(kind, scope):
@@ -237,8 +303,12 @@ def _r_recall(cat, m, trg, cust):
         slotbit = ""
         if len(slots) >= 2:
             slotbit = f"{slots[0].get('label', '')} ya {slots[1].get('label', '')}"
+            close = "Reply 1 or 2, or tell us a time that works."
         elif len(slots) == 1:
             slotbit = slots[0].get("label", "")
+            close = "Reply YES to hold it, or tell us a time that works."
+        else:
+            close = "Reply with a time that works and I'll hold it."
         months = ""
         last = payload.get("last_service_date", "") or _get(cust, "relationship", "last_visit", default="")
         if last and due:
@@ -251,10 +321,10 @@ def _r_recall(cat, m, trg, cust):
                 months = ""
         if himix:
             body = (f"Hi {cname}, {mname} here. {months}your {service} is due. "
-                    f"Apke liye slots ready hain: {slotbit}. {offer}. Reply 1 or 2, or tell us a time that works.")
+                    f"Apke liye slots ready hain: {slotbit}. {offer}. {close}")
         else:
             body = (f"Hi {cname}, {mname} here. {months}your {service} is due. "
-                    f"Open slots: {slotbit}. {offer}. Reply 1 or 2, or tell us a time that works.")
+                    f"Open slots: {slotbit}. {offer}. {close}")
         return body, f"hero=recall due ({service}); slots + offer + language-pref honoured"
     owner, _, _, _ = _owner(m)
     body = (f"Hi {owner}, recall window open for your roster ({service}). "
@@ -279,8 +349,14 @@ def _r_perf(cat, m, trg, cust, up=False):
     elif slug == "gyms" and not up:
         members = (m.get("customer_aggregate", {}) or {}).get("total_active_members")
         mbit = f" Protect your {members} active members first." if members else ""
-        body = (f"Hi {owner}, {metric} down {_pct(delta)} this week — flagging this is the normal seasonal lull, not a real problem."
-                f"{mbit} Skip extra ad spend now; save it for peak season. Want me to draft a retention challenge to hold attendance through the dip?")
+        seasonal = payload.get("is_expected_seasonal") or payload.get("season_note")
+        if seasonal:
+            frame = "flagging this matches the expected seasonal lull, not a real problem."
+            plan = "Skip extra ad spend now; save it for peak season."
+        else:
+            frame = "worth one look before it compounds."
+            plan = "One retention push now costs less than re-acquiring later."
+        body = (f"Hi {owner}, {metric} down {_pct(delta)} this week — {frame}{mbit} {plan} Want me to draft a retention challenge to hold attendance through the dip?")
     elif up:
         drv = payload.get("likely_driver", "")
         dbit = f" Likely driver: {drv}." if drv else ""
@@ -319,12 +395,13 @@ def _r_festival(cat, m, trg, cust):
     offer = _active_offer(m)
     obit = f" Your active '{offer}' is a natural fit to re-skin for it." if offer else " One service+price offer beats a flat discount for this."
     slug = cat.get("slug", "")
+    beat = _seasonal_note(cat)
     if slug == "salons":
-        extra = " Pre-festival skin-prep + trial bookings peak 3-4 weeks before — that's the window to fill now."
+        extra = f" {beat} — that's the window to fill now." if beat else " Pre-festival prep bookings fill first — that's the window to lock now."
     elif slug == "restaurants":
-        extra = " Family dine-in + delivery both spike that week — set the menu early."
+        extra = f" {beat} — set the menu early." if beat else " Set the festive menu early."
     else:
-        extra = ""
+        extra = f" {beat}." if beat else ""
     body = (f"Hi {owner}, {fest} is coming{dbit}.{extra}{obit} Want me to draft the festival post + customer WhatsApp today?")
     return body, "hero=festival date; merchant anchor=their live offer re-skinned"
 
@@ -338,9 +415,12 @@ def _r_bridal(cat, m, trg, cust):
         wed = payload.get("wedding_date", "")
         trial = payload.get("trial_completed", "")
         tbit = " since your trial with us" if trial else ""
+        # slot preference comes from the customer profile, never assumed
+        pref = str((cust.get("preferences", {}) or {}).get("preferred_slots", "")).replace("_", " ").strip()
+        slot = f"your preferred {pref[:1].upper() + pref[1:]} slot" if pref else "a slot that suits you"
         sender = f"{owner} from {name}" if owner else name
         body = (f"Hi {cname}, {sender} here. {days} days to your wedding{tbit} — right in the skin-prep window before bridal bookings fill. "
-                f"Want me to hold your preferred Saturday slot for the first prep session next week? Reply YES.")
+                f"Want me to hold {slot} for the first prep session next week? Reply YES.")
         return body, f"hero=wedding countdown ({days}d); continuity=trial history; single binary CTA"
     body = (f"Hi {owner}, bridal window open — wedding {days} days out for a trial customer. "
             f"Want me to draft the skin-prep follow-up + slot hold?")
@@ -384,13 +464,23 @@ def _r_ipl(cat, m, trg, cust):
     weeknight = payload.get("is_weeknight", True)
     offer = _active_offer(m)
     vbit = f" at {venue}" if venue else ""
+    match_time = payload.get("match_time_iso", "")
+    tbit = "7:30pm " if "19:30" in str(match_time) else ""
+    # Ground the covers call in the category digest when it carries numbers;
+    # otherwise make the contrarian call qualitatively — never invent a %.
+    item, pct = _digest_proof(cat, "covers", "ipl", "match-night", "home-watch")
+    cite = f" ({item.get('source')})" if item and item.get("source") else ""
     if weeknight:
-        body = (f"Hi {owner} — {match}{vbit}, 7:30pm tonight. Weeknight games lift covers ~18% in {loc}. "
-                f"Push your active '{offer or 'match-night combo'}' for dine-in tonight. Want me to draft the banner + story? Live in 10 min.")
+        data = f" Weeknight games lift covers {pct} here.{cite}" if pct else " Weeknight games lift covers here — dine-in night."
+        obit = f" Push your active '{offer}' for dine-in tonight." if offer else " Push dine-in tonight."
+        body = (f"Hi {owner} — {match}{vbit}, {tbit}tonight.{data}{obit} "
+                f"Want me to draft the banner + story? Live in 10 min.")
     else:
-        body = (f"Hi {owner} — {match}{vbit}, 7:30pm tonight. Heads-up: Saturday games shift -12% covers to home-watch parties. "
-                f"Skip the dine-in push; run your '{offer or 'BOGO'}' as delivery-only tonight. Want me to draft the delivery banner? Live in 10 min.")
-    return body, "hero=IPL fixture; contrarian call on weeknight vs Saturday from category data"
+        data = f" Saturday games shift {pct} covers to home-watch parties.{cite}" if pct else " Saturday games shift covers to home-watch parties."
+        obit = f"run your '{offer}' as delivery-only tonight" if offer else "go delivery-only tonight"
+        body = (f"Hi {owner} — {match}{vbit}, {tbit}tonight. Heads-up:{data} Skip the dine-in push; {obit}. "
+                f"Want me to draft the delivery banner? Live in 10 min.")
+    return body, "hero=IPL fixture; weeknight-vs-Saturday call grounded in category digest only"
 
 
 def _r_review(cat, m, trg, cust):
@@ -429,12 +519,26 @@ def _r_planning(cat, m, trg, cust):
     last = payload.get("merchant_last_message", "")
     slug = cat.get("slug", "")
     if slug == "restaurants":
-        body = (f"Hi {owner}, on the {topic} — here's a starter you can edit: 10 thalis @ ₹125 + free delivery, "
-                f"25 @ ₹115 + 2 filter coffees, 50+ @ ₹105 + dosa platter. Day-before orders by 5pm, delivery 12:30-1pm. "
-                f"Want me to draft the 3-line WhatsApp for nearby offices?")
+        offer = _active_offer(m)
+        base = _base_price(offer)
+        if base:
+            t2, t3 = _round5(base * 0.92), _round5(base * 0.85)
+            body = (f"Hi {owner}, on the {topic} — starter built off your live '{offer}': "
+                    f"10 @ ₹{base} + free delivery, 25 @ ₹{t2}, 50+ @ ₹{t3}. Day-before orders by 5pm, delivery 12:30-1pm. "
+                    f"Want me to draft the 3-line WhatsApp for nearby offices?")
+        else:
+            body = (f"Hi {owner}, on the {topic} — starter: 10/25/50 slabs with free delivery on top. "
+                    f"Give me your base thali price and I'll lock the tiers + draft the 3-line WhatsApp for nearby offices?")
     elif slug == "gyms":
-        body = (f"Hi {owner}, on the {topic} — starter shape: 4-week block, 3 classes/week, age-banded batches, ₹2,499 all-in. "
-                f"Summer demand is peaking now. Want me to draft the GBP post + trial invite?")
+        offer = _active_offer(m)
+        if offer:
+            body = (f"Hi {owner}, on the {topic} — starter shape: 4-week block, 3 classes/week, age-banded batches, "
+                    f"with your live '{offer}' as the trial hook. Want me to draft the GBP post + trial invite?")
+        else:
+            cat1 = (cat.get("offer_catalog", []) or [{}])[0].get("title", "")
+            cbit = f" Your category's standard hook is '{cat1}'." if cat1 else ""
+            body = (f"Hi {owner}, on the {topic} — starter shape: 4-week block, 3 classes/week, age-banded batches.{cbit} "
+                    f"Want me to draft the GBP post + trial invite?")
     else:
         qbit = f' You asked: "{last}".' if last else ""
         body = (f"Hi {owner}, on the {topic}.{qbit} I've sketched a starter version with pricing + next steps. "
@@ -453,7 +557,7 @@ def _r_supply(cat, m, trg, cust):
     agg = m.get("customer_aggregate", {}) or {}
     chronic = agg.get("chronic_rx_count")
     cbit = f" You have {chronic} chronic-Rx customers — I'll filter who got these batches." if chronic else ""
-    body = (f"{owner} ji, urgent: voluntary recall on {mol}{bbit}{fbit} — sub-potency, inform for replacement.{cbit} "
+    body = (f"{owner} ji, urgent: voluntary recall on {mol}{bbit}{fbit} — customers who got these batches should be informed for replacement.{cbit} "
             f"Want me to draft their WhatsApp note + the replacement-pickup workflow?")
     return body, "hero=recall with batch numbers; merchant anchor=chronic-Rx roster filter"
 
@@ -470,13 +574,21 @@ def _r_refill(cat, m, trg, cust):
         senior = _get(cust, "identity", "senior_citizen", default=False)
         pref = str(_get(cust, "identity", "language_pref", default="en")).lower()
         molbit = ", ".join(mols[:3]) if mols else "monthly medicines"
+        senior_offer = _find_offer(m, "senior")
+        delivery_offer = _find_offer(m, "delivery")
         if senior or "hi" in pref:
-            body = (f"Namaste — {mname} {loc} yahan. {cname} ji ki {molbit}{dbit} Same dose, same brand pack ready hai. "
-                    f"Senior discount 15% applied. Free home delivery to saved address by 5pm tomorrow. Reply CONFIRM to dispatch.")
+            obit = f" {senior_offer} applied." if senior_offer else ""
+            dbit2 = f" {delivery_offer} to saved address by 5pm tomorrow." if delivery_offer else " Home delivery to saved address by 5pm tomorrow."
+            body = (f"Namaste — {mname} {loc} yahan. {cname} ji ki {molbit}{dbit} Same dose, same brand pack ready hai.{obit}{dbit2} "
+                    f"Reply CONFIRM to dispatch.")
         else:
-            body = (f"Hi {cname}, {mname} here. Your {molbit} run out {str(runs)[:10]}. Same dose, same brand ready. "
-                    f"Free home delivery by 5pm tomorrow. Reply CONFIRM to dispatch, or call if dosage changed.")
-        return body, "hero=refill date + molecule list; senior/hindi norms honoured; single CONFIRM CTA"
+            dbit2 = f" {delivery_offer} by 5pm tomorrow." if delivery_offer else " Free home delivery by 5pm tomorrow."
+            # only promise free delivery when the merchant actually offers it
+            if not delivery_offer:
+                dbit2 = " Delivery to your saved address by 5pm tomorrow."
+            body = (f"Hi {cname}, {mname} here. Your {molbit} run out {str(runs)[:10]}. Same dose, same brand ready.{dbit2} "
+                    f"Reply CONFIRM to dispatch, or call if dosage changed.")
+        return body, "hero=refill date + molecule list; offers quoted only if in merchant catalog"
     body = (f"{_owner(m)[0]} ji, chronic refill due ({', '.join(mols[:3]) or 'monthly cycle'}). Want me to queue the refill reminders + delivery run?")
     return body, "hero=refill cycle; action=reminders + delivery"
 
@@ -489,15 +601,23 @@ def _r_customer_lapse(cat, m, trg, cust):
     offer = _active_offer(m) or "a free trial visit"
     if cust:
         cname = str(_get(cust, "identity", "name", default="there")).split("(")[0].strip()
-        fbit = f" that fits {str(focus).replace('_', ' ')} goals" if focus else ""
+        fbit = f" {str(focus).replace('_', ' ')}" if focus else " fitness"
         trial = payload.get("next_session_options", []) or []
         if trial and isinstance(trial[0], dict):
             sbit = f" Want me to hold a free trial spot {trial[0].get('label', 'next session')}? Reply YES — no commitment."
         else:
             sbit = f" Want me to hold a free trial spot next week? Reply YES — no commitment, no auto-charge."
+        # winback vehicle is always real: merchant's live offer, else the category's
+        # standard trial hook — never an invented class.
+        vehicle = offer if offer != "a free trial visit" else None
+        if not vehicle:
+            cat1 = (cat.get("offer_catalog", []) or [{}])[0].get("title", "")
+            vehicle = f"'{cat1}'" if cat1 else "a free trial visit"
+        else:
+            vehicle = f"'{vehicle}'"
         body = (f"Hi {cname}, {owner} from {name} here. It's been about {days} days — happens to most members, no judgment. "
-                f"We've added a class{fbit} (45 min evenings).{sbit}")
-        return body, "hero=lapse duration + past goal; no-shame framing; single YES CTA"
+                f"For{fbit} goals like yours, {vehicle} is the easiest way back in.{sbit}")
+        return body, "hero=lapse duration + past goal; vehicle=real offer only; single YES CTA"
     body = (f"Hi {owner}, a customer lapsed ~{days} days ({str(focus).replace('_',' ') or 'no focus recorded'}). "
             f"Your '{offer}' is the right winback. Want me to draft the winback note?")
     return body, "hero=lapse + focus; merchant action=winback draft"
@@ -517,8 +637,9 @@ def _r_seasonal(cat, m, trg, cust):
 def _r_gbp(cat, m, trg, cust):
     owner, name, loc, city = _owner(m)
     payload = trg.get("payload", {}) or {}
-    uplift = payload.get("estimated_uplift_pct", 0.30)
-    body = (f"Hi {owner}, {name} is still unverified on Google — verification alone typically lifts calls ~{_pct(uplift)} in {loc}. "
+    uplift = payload.get("estimated_uplift_pct", None)
+    ubit = f" — verification alone typically lifts calls ~{_pct(uplift)} in {loc}" if isinstance(uplift, (int, float)) else " — verification lifts discovery in your locality"
+    body = (f"Hi {owner}, {name} is still unverified on Google.{ubit}. "
             f"I've mapped the postcard-or-call path. Want me to walk you through it (5 min)?")
     return body, "hero=unverified status + quantified uplift; 5-min effort cap"
 
@@ -533,7 +654,7 @@ def _r_cde(cat, m, trg, cust):
     title = (item or {}).get("title", "upcoming CDE/training")
     date = (item or {}).get("date", "")
     dbit = f" on {str(date)[:10]}" if date else ""
-    body = (f"Hi {owner}, {title}{dbit} — {credits} CDE credits{fbit}. Fits your case-mix from recent consults. "
+    body = (f"Hi {owner}, {title}{dbit} — {credits} CDE credits{fbit}. "
             f"Want me to hold the details + a 2-line leave note for your staff?")
     return body, "hero=CDE with credits/date; low-friction hold CTA"
 
@@ -560,7 +681,9 @@ def _r_dormant(cat, m, trg, cust):
     tbit = f" Last we touched '{str(topic).replace('_', ' ')}'." if topic else ""
     perf = m.get("performance", {}) or {}
     pbit = f" Since then: {perf.get('views', '?')} views, {perf.get('calls', '?')} calls." if perf.get("views") else ""
-    body = (f"Hi {owner}, it's been {days} days — no pitch.{tbit}{pbit} One thing changed on your listing worth 2 min. "
+    sigs = m.get("signals", []) or []
+    sbit = f" Your signal '{sigs[0]}' is the one I'd fix first." if sigs else " One listing fix is worth 2 min."
+    body = (f"Hi {owner}, it's been {days} days — no pitch.{tbit}{pbit}{sbit} "
             f"Want the 2-min version?")
     return body, "hero=dormancy duration + what's-changed curiosity; zero-pressure re-entry"
 
@@ -635,9 +758,10 @@ def compose(category, merchant, trigger, customer=None):
 
     Returns keys: body, cta, send_as, suppression_key, rationale.
     """
-    category = category or {}
-    merchant = merchant or {}
-    trigger = trigger or {}
+    category = _de_mojibake(category or {})
+    merchant = _de_mojibake(merchant or {})
+    trigger = _de_mojibake(trigger or {})
+    customer = _de_mojibake(customer) if customer else None
     kind = trigger.get("kind", "update")
     scope = trigger.get("scope", "customer" if customer else "merchant")
 

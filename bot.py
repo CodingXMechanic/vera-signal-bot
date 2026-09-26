@@ -20,7 +20,7 @@ TEAM = {"team_name": "Vera Signal Bot", "team_members": ["Solo Builder"],
         "approach": "signal-arbitration composer: one grounded hero fact per send, "
                     "per-kind renderers in per-category voice, multilingual reply state-machine "
                     "(auto-reply ladder, commit-flip, graceful exit)",
-        "contact_email": "builder@example.com", "version": "2.0.0",
+        "contact_email": "builder@example.com", "version": "2.1.0",
         "submitted_at": "2026-09-26T00:00:00Z"}
 
 store = {}   # (scope, context_id) -> {"version": int, "payload": dict}

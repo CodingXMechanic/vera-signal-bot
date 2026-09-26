@@ -7,7 +7,8 @@ fact** to open with, then renders through a per-trigger-kind template in a
 per-category voice (peer-clinical for dentists, fellow-operator for restaurants,
 coach for gyms, warm-practical for salons, trustworthy-precise for pharmacies).
 Nothing is ever invented — every number, name, date and price is quoted from the
-pushed contexts, taboo words are scrubbed, and exactly one CTA is enforced
+pushed contexts (bulk tiers are computed off the live offer price, never
+hardcoded), taboo words are scrubbed, and exactly one CTA is enforced
 (`binary_yes_no` for actions, `open_ended` for digests/curiosity, `multi_choice_slot`
 only for booking flows). Tick latency is ~1 ms, so the 30 s budget can never blow.
 

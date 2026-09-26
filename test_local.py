@@ -42,10 +42,10 @@ def check(name, cond, extra=""):
 
 
 seed = Path(__file__).parent.parent / "magicpin-ai-challenge" / "dataset"
-cats = [json.load(open(f)) for f in (seed / "categories").glob("*.json")]
-merchs = json.load(open(seed / "merchants_seed.json"))["merchants"]
-trigs = json.load(open(seed / "triggers_seed.json"))["triggers"]
-custs = json.load(open(seed / "customers_seed.json"))["customers"]
+cats = [json.load(open(f, encoding="utf-8")) for f in (seed / "categories").glob("*.json")]
+merchs = json.load(open(seed / "merchants_seed.json", encoding="utf-8"))["merchants"]
+trigs = json.load(open(seed / "triggers_seed.json", encoding="utf-8"))["triggers"]
+custs = json.load(open(seed / "customers_seed.json", encoding="utf-8"))["customers"]
 
 s, r = call("GET", "/v1/healthz")
 check("healthz", s == 200 and r["status"] == "ok", str(r["contexts_loaded"]))
@@ -81,6 +81,15 @@ ok_schema = all(all(k in a for k in ("conversation_id", "merchant_id", "send_as"
 check("tick action schema", ok_schema)
 bodies = [a["body"] for a in acts]
 check("no generic copy", not any("increase your sales" in b.lower() or "discount campaign" in b.lower() for b in bodies))
+# Grounding regression: literals that were once hardcoded/invented must never
+# appear unless proven present in the pushed inputs (they aren't, in seeds).
+BANNED = ["HIIT", "sub-potency", "Embassy", "RMZ", "\u20b92,499",
+          "10 thalis", "dosa platter", "-12%", "match-night combo", "'BOGO'",
+          "45 min", "case-mix", "skin-prep + trial bookings peak"]
+# Note: a capitalised weekday slot is intentionally NOT banned: it now renders
+# only when the customer profile's own preferred_slots says so (grounded).
+check("no invented specifics", not any(x in b for b in bodies for x in BANNED),
+      "scanned 20 tick bodies")
 check("merchant-facing send_as=vera present", any(a["send_as"] == "vera" for a in acts))
 check("customer-facing send_as=merchant_on_behalf present",
       any(a["send_as"] == "merchant_on_behalf" for a in acts))
