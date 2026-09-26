@@ -760,7 +760,11 @@ def compose(category, merchant, trigger, customer=None, polish_fn=None):
     Optional polish_fn(text)->str lets an LLM rephrase for flow; the
     validator in polish.py guarantees the sent text keeps every fact.
     """
-    from polish import polish as _polish
+    try:
+        from polish import polish as _polish
+    except Exception:
+        def _polish(body, call_fn=None, timeout=8):
+            return body, "polish=off"
     category = _de_mojibake(category or {})
     merchant = _de_mojibake(merchant or {})
     trigger = _de_mojibake(trigger or {})
