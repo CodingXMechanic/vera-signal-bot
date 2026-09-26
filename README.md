@@ -26,13 +26,15 @@ How it works, in plain words:
 4. **One ask, easy to answer.** Every message ends with a single low-effort step:
    reply YES, reply 1 or 2, or just say the word.
 
-Where the LLM fits: it doesn't decide anything. After the deterministic draft is
-done, an LLM may rephrase it for flow — but a validator checks the rephrase
-against every number, name, price and the CTA, and any violation (or any API
-hiccup) falls back to the draft untouched. Set `LLM_API_KEY` (plus optional
-`LLM_BASE_URL` / `LLM_MODEL`, any OpenAI-compatible API) to enable it; without
-a key the bot runs fully deterministic. The guarantee holds either way: this
-system cannot send an ungrounded message.
+Where the LLM fits: it never decides facts. It has two gated jobs. (1) Rephrase
+a finished draft for flow. (2) Draft messages for trigger kinds nobody has ever
+seen — working only from the live contexts, with every number/name/CTA checked
+against them. Any violation, or any API hiccup, falls back to the deterministic
+draft untouched. Set `LLM_API_KEY` (plus optional `LLM_BASE_URL` / `LLM_MODEL`,
+any OpenAI-compatible API) to enable it; without a key the bot runs fully
+deterministic, and tick composes run in parallel so a slow provider can never
+blow the 30s budget. The guarantee holds either way: this system cannot send
+an ungrounded message.
 
 Replies get the same treatment — a small state machine, not vibes: it spots
 WhatsApp auto-replies (flags once, waits, then stops wasting everyone's time),

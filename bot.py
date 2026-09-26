@@ -17,15 +17,18 @@ from reply_engine import reply as reply_turn
 
 START = time.time()
 TEAM = {"team_name": "Vera Signal Bot", "team_members": ["Solo Builder"],
-        "model": "deterministic-signal-arbitration-v2.2 + LLM polish "
-                 "(fact-allowlisted, validator-gated, fallback-safe)",
+        "model": "deterministic-signal-arbitration-v2.3 + LLM "
+                 "(fact-allowlisted polish + grounded unknown-scenario compose, "
+                 "validator-gated, fallback-safe)",
         "approach": "deterministic composer picks one grounded hero fact per send "
-                    "in per-category voice; an LLM optionally rephrases for flow "
-                    "inside a fact allowlist enforced by a validator (any changed "
-                    "number/name/CTA falls back to the deterministic draft); "
-                    "multilingual reply state-machine "
+                    "in per-category voice; an LLM rephrases for flow and drafts "
+                    "never-seen trigger kinds from live contexts — both inside a "
+                    "fact allowlist enforced by a validator (any changed number, "
+                    "new claim or lost CTA falls back to the deterministic draft); "
+                    "parallel tick composes protect the 30s budget; multilingual "
+                    "reply state-machine "
                     "(auto-reply ladder, commit-flip, graceful exit)",
-        "contact_email": "builder@example.com", "version": "2.2.0",
+        "contact_email": "builder@example.com", "version": "2.3.0",
         "submitted_at": "2026-09-26T00:00:00Z"}
 
 
@@ -41,10 +44,11 @@ def _llm_fn():
         return None
     base = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
     model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
-    from polish import call_openai_compatible
+    from polish import call_openai_compatible, COMPOSE_SYSTEM
 
-    def call(prompt):
-        return call_openai_compatible(prompt, base, key, model, timeout=8)
+    def call(prompt, system=None):
+        return call_openai_compatible(prompt, base, key, model, timeout=6,
+                                      system=system)
 
     return call
 
@@ -63,7 +67,8 @@ def _payload_of(scope, cid):
 
 
 def _tick(trg_ids, seen_conv):
-    actions = []
+    # Phase 1 (fast, sequential): resolve contexts, filter, build jobs.
+    jobs = []
     for tid in (trg_ids or [])[:20]:
         trg = _payload_of("trigger", tid)
         if not trg or not isinstance(trg, dict):
@@ -79,7 +84,23 @@ def _tick(trg_ids, seen_conv):
         skey = trg.get("suppression_key", tid)
         if skey in sent_keys:
             continue
-        msg = compose(cat, merch, trg, cust, polish_fn=POLISH_FN)
+        jobs.append((tid, trg, mid, merch, cat, cust, skey))
+    # Phase 2: compose. Deterministic path is instant; LLM-backed unknown-kind
+    # composes run in parallel so a slow provider can't blow the 30s budget.
+    import concurrent.futures as _cf
+    from composer import RENDERERS as _R
+
+    def _one(job):
+        tid, trg, mid, merch, cat, cust, skey = job
+        needs_llm = POLISH_FN is not None and trg.get("kind") not in _R
+        if needs_llm:
+            return compose(cat, merch, trg, cust, polish_fn=POLISH_FN)
+        return compose(cat, merch, trg, cust)
+
+    msgs = jobs and list(_cf.ThreadPoolExecutor(max_workers=8).map(_one, jobs)) or []
+    # Phase 3 (sequential): stable ordering, dedup, convo bookkeeping.
+    actions = []
+    for (tid, trg, mid, merch, cat, cust, skey), msg in zip(jobs, msgs):
         cid = trg.get("customer_id")
         conv = f"conv_{mid}_{tid}".replace(" ", "_")[:90] if not cid else f"conv_{cid}_{tid}".replace(" ", "_")[:90]
         if conv in seen_conv:

@@ -72,6 +72,44 @@ check("cta unchanged by polish", b["cta"] == a["cta"] and b["send_as"] == a["sen
 d = compose(c, m, t10, polish_fn=lambda p: GOOD.replace("50%", "60%"))
 check("compose falls back on bad polish", d["body"] == a["body"] and "rejected" in d["rationale"])
 
+# ---- grounded unknown-scenario compose ----
+UNK = {"kind": "monsoon_flood_alert", "scope": "merchant",
+       "payload": {"area": "Lajpat Nagar", "rain_mm": 180,
+                   "clinic_action": "move records upstairs"},
+       "suppression_key": "u:test"}
+M1 = {"merchant_id": "m_001_drmeera_dentist_delhi",
+      "identity": {"name": "Dr. Meera's Dental Clinic", "city": "Delhi",
+                   "locality": "Lajpat Nagar", "owner_first_name": "Meera"},
+      "offers": []}
+C1 = {"slug": "dentists", "voice": {}, "digest": [], "offer_catalog": []}
+
+
+def good_llm(prompt, system=None):
+    return ("Hi Meera, 180mm rain in Lajpat Nagar — move records upstairs today. "
+            "Want me to draft the closure notice for patients?")
+
+
+def bad_llm(prompt, system=None):
+    return ("Hi Meera, GUARANTEED miracle fix! 50% off mega deal today only, "
+            "plus a free car! Reply now now now.")
+
+
+def dead_llm(prompt, system=None):
+    raise TimeoutError("slow")
+
+
+g = compose(C1, M1, UNK, polish_fn=good_llm)
+check("unknown llm accepted", "llm-compose=accepted" in g["rationale"]
+      and "180" in g["body"] and g["cta"] == "open_ended"
+      and g["send_as"] == "vera", g["rationale"][-60:])
+b = compose(C1, M1, UNK, polish_fn=bad_llm)
+check("unknown inventing falls back", "rejected" in b["rationale"]
+      and "180" in b["body"] and "miracle" not in b["body"].lower())
+d = compose(C1, M1, UNK, polish_fn=dead_llm)
+check("unknown timeout falls back", "fallback" in d["rationale"] and "180" in d["body"])
+nn = compose(C1, M1, UNK)
+check("unknown no-llm generic", "polish=off" in nn["rationale"] and "180" in nn["body"])
+
 print(f"\n{n[0] - len(fails)}/{n[0]} polish checks passed")
 print("ALL PASS" if not fails else f"FAILURES: {fails}")
 sys.exit(1 if fails else 0)

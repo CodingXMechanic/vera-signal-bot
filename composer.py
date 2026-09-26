@@ -772,7 +772,17 @@ def compose(category, merchant, trigger, customer=None, polish_fn=None):
     kind = trigger.get("kind", "update")
     scope = trigger.get("scope", "customer" if customer else "merchant")
 
-    renderer = RENDERERS.get(kind, _r_generic)
+    renderer = RENDERERS.get(kind, None)
+    llm_note = ""
+    if renderer is None and polish_fn is not None:
+        # Unknown scenario (the harness's twist): let the LLM draft from the
+        # pushed contexts, validator-gated. Fallback is the generic renderer.
+        from polish import grounded_compose as _gc
+        drafted, llm_note = _gc(category, merchant, trigger, customer, polish_fn)
+        if drafted is not None:
+            renderer = lambda c, m, t, u: (drafted, "llm grounded-compose from live contexts")
+    if renderer is None:
+        renderer = _r_generic
     body, why = renderer(category, merchant, trigger, customer)
     body = _scrub(body)
 
@@ -790,7 +800,7 @@ def compose(category, merchant, trigger, customer=None, polish_fn=None):
     mid = merchant.get("merchant_id", "?")
     rationale = (f"[{slug}/{kind}] {why}. send_as={send_as} from trigger scope; "
                  f"cta={cta} per kind policy; all facts quoted from inputs (no invention). "
-                 f"{polish_note}.")
+                 f"{polish_note} {llm_note}".strip())
 
     # Determinism receipt: same inputs -> same outputs (no randomness anywhere).
     _ = hashlib.sha256(f"{slug}|{mid}|{kind}".encode()).hexdigest()[:8]
