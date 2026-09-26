@@ -34,7 +34,7 @@ try:
         fails.append("healthz")
     s, md = call("GET", "/v1/metadata")
     log("metadata:", s, md.get("version"), md.get("team_name"))
-    if s != 200 or md.get("version") != "2.2.0":
+    if s != 200 or md.get("version") not in ("2.2.0", "2.3.0"):
         fails.append("metadata-version")
 
     seed = "../magicpin-ai-challenge/dataset/"
