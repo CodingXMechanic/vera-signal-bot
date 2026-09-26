@@ -123,25 +123,40 @@ class H(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
-    def do_GET(self):
-        p = urlparse(self.path).path
+    def _route_get(self, p):
+        """Shared GET/HEAD routing. Returns (code, obj)."""
         if p == "/":
-            self._send(200, {"service": "vera-signal-bot", "status": "live",
-                             "judge_endpoints": ["GET /v1/healthz", "GET /v1/metadata",
-                                                 "POST /v1/context", "POST /v1/tick",
-                                                 "POST /v1/reply"],
-                             "repo": "https://github.com/CodingXMechanic/vera-signal-bot"})
-        elif p == "/v1/healthz":
+            return 200, {"service": "vera-signal-bot", "status": "live",
+                         "judge_endpoints": ["GET /v1/healthz", "GET /v1/metadata",
+                                             "POST /v1/context", "POST /v1/tick",
+                                             "POST /v1/reply"],
+                         "repo": "https://github.com/CodingXMechanic/vera-signal-bot"}
+        if p == "/v1/healthz":
             counts = {"category": 0, "merchant": 0, "customer": 0, "trigger": 0}
             for (s, _) in store:
                 if s in counts:
                     counts[s] += 1
-            self._send(200, {"status": "ok", "uptime_seconds": int(time.time() - START),
-                             "contexts_loaded": counts})
-        elif p == "/v1/metadata":
-            self._send(200, TEAM)
-        else:
-            self._send(404, {"error": "not_found"})
+            return 200, {"status": "ok", "uptime_seconds": int(time.time() - START),
+                         "contexts_loaded": counts}
+        if p == "/v1/metadata":
+            return 200, TEAM
+        return 404, {"error": "not_found"}
+
+    def do_GET(self):
+        p = urlparse(self.path).path
+        code, obj = self._route_get(p)
+        self._send(code, obj)
+
+    def do_HEAD(self):
+        # UptimeRobot and other monitors probe with HEAD: same status as GET,
+        # headers only, no body.
+        p = urlparse(self.path).path
+        code, obj = self._route_get(p)
+        b = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
 
     def do_POST(self):
         from datetime import datetime, timezone
