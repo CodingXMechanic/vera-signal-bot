@@ -97,7 +97,13 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = urlparse(self.path).path
-        if p == "/v1/healthz":
+        if p == "/":
+            self._send(200, {"service": "vera-signal-bot", "status": "live",
+                             "judge_endpoints": ["GET /v1/healthz", "GET /v1/metadata",
+                                                 "POST /v1/context", "POST /v1/tick",
+                                                 "POST /v1/reply"],
+                             "repo": "https://github.com/CodingXMechanic/vera-signal-bot"})
+        elif p == "/v1/healthz":
             counts = {"category": 0, "merchant": 0, "customer": 0, "trigger": 0}
             for (s, _) in store:
                 if s in counts:
