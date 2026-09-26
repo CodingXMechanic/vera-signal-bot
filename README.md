@@ -26,6 +26,14 @@ How it works, in plain words:
 4. **One ask, easy to answer.** Every message ends with a single low-effort step:
    reply YES, reply 1 or 2, or just say the word.
 
+Where the LLM fits: it doesn't decide anything. After the deterministic draft is
+done, an LLM may rephrase it for flow — but a validator checks the rephrase
+against every number, name, price and the CTA, and any violation (or any API
+hiccup) falls back to the draft untouched. Set `LLM_API_KEY` (plus optional
+`LLM_BASE_URL` / `LLM_MODEL`, any OpenAI-compatible API) to enable it; without
+a key the bot runs fully deterministic. The guarantee holds either way: this
+system cannot send an ungrounded message.
+
 Replies get the same treatment — a small state machine, not vibes: it spots
 WhatsApp auto-replies (flags once, waits, then stops wasting everyone's time),
 it hears "yes, do it" in English, Hindi or Hinglish and switches straight to
@@ -34,10 +42,11 @@ action, and it bows out gracefully when someone's annoyed.
 ## Files
 
 - `bot.py` — the server (5 endpoints, plain Python, no packages to install)
-- `composer.py` — the message writer
+- `composer.py` — the message writer (deterministic core)
+- `polish.py` — the optional LLM rephraser + fact validator
 - `reply_engine.py` — the conversation handler
 - `submission.jsonl` — my 25 composed messages for the sample triggers
-- `test_local.py` / `test_full.py` — self-tests (31 + 234 checks, all passing)
+- `test_local.py` / `test_full.py` / `test_polish.py` — self-tests (31 + 234 + 11 checks, all passing)
 
 ## Run it
 

@@ -6,6 +6,7 @@ Endpoints: GET /v1/healthz, GET /v1/metadata,
 Run: python bot.py [--port 8080]
 """
 import json
+import os
 import time
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,12 +17,39 @@ from reply_engine import reply as reply_turn
 
 START = time.time()
 TEAM = {"team_name": "Vera Signal Bot", "team_members": ["Solo Builder"],
-        "model": "deterministic-signal-arbitration-v2 (no LLM calls)",
-        "approach": "signal-arbitration composer: one grounded hero fact per send, "
-                    "per-kind renderers in per-category voice, multilingual reply state-machine "
+        "model": "deterministic-signal-arbitration-v2.2 + LLM polish "
+                 "(fact-allowlisted, validator-gated, fallback-safe)",
+        "approach": "deterministic composer picks one grounded hero fact per send "
+                    "in per-category voice; an LLM optionally rephrases for flow "
+                    "inside a fact allowlist enforced by a validator (any changed "
+                    "number/name/CTA falls back to the deterministic draft); "
+                    "multilingual reply state-machine "
                     "(auto-reply ladder, commit-flip, graceful exit)",
-        "contact_email": "builder@example.com", "version": "2.1.0",
+        "contact_email": "builder@example.com", "version": "2.2.0",
         "submitted_at": "2026-09-26T00:00:00Z"}
+
+
+def _llm_fn():
+    """Build the polish callable from env, or None (deterministic mode).
+
+    Env: LLM_API_KEY (required to enable), LLM_BASE_URL (default OpenAI),
+         LLM_MODEL (default gpt-4o-mini). Works with any OpenAI-compatible
+         API (OpenAI, DeepSeek, Groq, OpenRouter, local Ollama).
+    """
+    key = os.environ.get("LLM_API_KEY", "")
+    if not key:
+        return None
+    base = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
+    model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+    from polish import call_openai_compatible
+
+    def call(prompt):
+        return call_openai_compatible(prompt, base, key, model, timeout=8)
+
+    return call
+
+
+POLISH_FN = _llm_fn()
 
 store = {}   # (scope, context_id) -> {"version": int, "payload": dict}
 convos = {}  # conversation_id -> {"turns": [], "auto_streak": 0, "nudges": 0,
@@ -51,7 +79,7 @@ def _tick(trg_ids, seen_conv):
         skey = trg.get("suppression_key", tid)
         if skey in sent_keys:
             continue
-        msg = compose(cat, merch, trg, cust)
+        msg = compose(cat, merch, trg, cust, polish_fn=POLISH_FN)
         cid = trg.get("customer_id")
         conv = f"conv_{mid}_{tid}".replace(" ", "_")[:90] if not cid else f"conv_{cid}_{tid}".replace(" ", "_")[:90]
         if conv in seen_conv:

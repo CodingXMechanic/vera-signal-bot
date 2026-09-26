@@ -753,11 +753,14 @@ RENDERERS = {
 }
 
 
-def compose(category, merchant, trigger, customer=None):
+def compose(category, merchant, trigger, customer=None, polish_fn=None):
     """Deterministic compose(category, merchant, trigger, customer?) -> dict.
 
     Returns keys: body, cta, send_as, suppression_key, rationale.
+    Optional polish_fn(text)->str lets an LLM rephrase for flow; the
+    validator in polish.py guarantees the sent text keeps every fact.
     """
+    from polish import polish as _polish
     category = _de_mojibake(category or {})
     merchant = _de_mojibake(merchant or {})
     trigger = _de_mojibake(trigger or {})
@@ -769,6 +772,12 @@ def compose(category, merchant, trigger, customer=None):
     body, why = renderer(category, merchant, trigger, customer)
     body = _scrub(body)
 
+    # Optional LLM polish: rewords for flow only. The validator rejects any
+    # rephrase that alters a fact, and any error falls back to this draft.
+    final_body, polish_note = _polish(body, polish_fn)
+    if final_body != body:
+        final_body = _scrub(final_body)
+
     send_as = "merchant_on_behalf" if (scope == "customer" and customer) else "vera"
     cta = _cta_for(kind, scope)
     suppression = trigger.get("suppression_key", f"{kind}:{merchant.get('merchant_id', 'x')}")
@@ -776,12 +785,13 @@ def compose(category, merchant, trigger, customer=None):
     slug = category.get("slug", "?")
     mid = merchant.get("merchant_id", "?")
     rationale = (f"[{slug}/{kind}] {why}. send_as={send_as} from trigger scope; "
-                 f"cta={cta} per kind policy; all facts quoted from inputs (no invention).")
+                 f"cta={cta} per kind policy; all facts quoted from inputs (no invention). "
+                 f"{polish_note}.")
 
     # Determinism receipt: same inputs -> same outputs (no randomness anywhere).
     _ = hashlib.sha256(f"{slug}|{mid}|{kind}".encode()).hexdigest()[:8]
     return {
-        "body": body,
+        "body": final_body,
         "cta": cta,
         "send_as": send_as,
         "suppression_key": suppression,
