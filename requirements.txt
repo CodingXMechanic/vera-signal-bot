@@ -1,0 +1,1 @@
+stdlib only — no install needed. Run:  python bot.py  /  python -m http.server-free self-test via test_local.py

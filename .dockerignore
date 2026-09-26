@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+test_out.log
+test_local.py
+generate_submission.py
+submission.jsonl
